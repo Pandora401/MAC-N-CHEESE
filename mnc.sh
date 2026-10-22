@@ -4,12 +4,9 @@ CONFIG_DIR="$HOME/.network_spoof"
 PROFILE_FILE="$CONFIG_DIR/profiles.conf"
 SESSION_FILE="$CONFIG_DIR/session_info"
 
-# Create config dir if it no exist
 mkdir -p "$CONFIG_DIR"
 
 usage() {
-    echo "Network Spoofing Tool"
-    echo "Usage: $0 [OPTIONS]"
     echo "                                                                       
                              ::::::::                                        
                            :=-::::::::::::                                   
@@ -41,27 +38,30 @@ usage() {
                                    -        >                                
                                __)*      __#                               
     "
+    echo "Network Spoofing Tool"
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
     echo "Options:"
-    echo "  -cp         --create-profile     Create a new spoofing profile"
-    echo "  -lp         --list-profiles      List all available profiles"
-    echo "  -up NAME    --use-profile NAME   Use existing profile (NAME)"
-    echo "  -gn         --generate-new       Generate completely new spoofing identity"
-    echo "  -so         --session-only       Make changes temporary (session only)"
-    echo "  -p          --persistent         Make changes persistent until manually changed"
-    echo "  -r          --reset              Reset to original network configuration"
-    echo "  -h          --help               Show this help message"
+    echo "  -c      Create a new spoofing profile"
+    echo "  -l      List all available profiles"
+    echo "  -u NAME  Use existing profile (NAME)"
+    echo "  -g      Generate completely new spoofing identity"
+    echo "  -s      Make changes temporary (session only)"
+    echo "  -p      Make changes persistent until manually changed"
+    echo "  -r      Reset to original network configuration"
+    echo "  -h      Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 -cp -so"
-    echo "  $0 -up work_device -p"
-    echo "  $0 -gn -so"
+    echo "  $0 -c -s"
+    echo "  $0 -u work_device -p"
+    echo "  $0 -g -s"
     echo "  $0 -r"
 }
 
 generate_random_mac() {
     printf '02:%02x:%02x:%02x:%02x:%02x\n' \
         $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) \
-        $((RANDOM%256)) $((RANDOM%256))
+        $((RANDOM%256)) $((RANDOM%255))
 }
 
 generate_random_ip() {
@@ -133,9 +133,18 @@ reset_network() {
         local interface=$(grep 'interface=' "$SESSION_FILE" | cut -d'=' -f2)
         
         if [[ -n "$original_mac" && -n "$interface" ]]; then
+            echo "Restoring original MAC address: $original_mac"
             sudo ip link set "$interface" down
-            sudo macchanger -m "$original_mac" "$interface"
+            sudo macchanger -m "$original_mac" "$interface" 2>/dev/null || true
             sudo ip link set "$interface" up
+            
+            # Clear any existing IP addresses and reconfigure
+            sudo ip addr flush dev "$interface"
+            
+            # Bring interface back up with original settings
+            sudo dhclient -r "$interface" 2>/dev/null || true
+            sudo dhclient "$interface" 2>/dev/null || true
+            
             echo "Original MAC address restored: $original_mac"
         fi
         
@@ -145,7 +154,7 @@ reset_network() {
         echo "No session information found to reset."
     fi
     
-    # flush
+    # Force refresh of network configuration
     local interface=$(get_interface)
     sudo ip link set "$interface" down
     sudo ip link set "$interface" up
@@ -153,7 +162,6 @@ reset_network() {
     echo "Network configuration reset complete."
 }
 
-# Apply spoof
 apply_spoofing() {
     local profile_name="$1"
     local is_persistent="$2"
@@ -185,24 +193,43 @@ apply_spoofing() {
         echo "  MAC: $new_mac"
     fi
     
-    # Save OG MAC address for reset
     if [[ ! -f "$SESSION_FILE" ]]; then
-        local original_mac=$(cat /sys/class/net/"$interface"/address)
+        local original_mac=$(cat /sys/class/net/"$interface"/address 2>/dev/null || echo "00:00:00:00:00:00")
         echo "original_mac=$original_mac" > "$SESSION_FILE"
         echo "interface=$interface" >> "$SESSION_FILE"
     fi
     
-    # Apply new config
+    echo "Stopping network services..."
+    sudo systemctl stop NetworkManager 2>/dev/null || true
     sudo ip link set "$interface" down
-    sudo macchanger -m "$new_mac" "$interface"
-    sudo ip addr flush dev "$interface"
-    sudo ip addr add "$new_ip"/24 dev "$interface"
-    sudo ip link set "$interface" up
+    
+    echo "Setting new MAC address: $new_mac"
+    sudo macchanger -m "$new_mac" "$interface" 2>/dev/null || true
+    
+    echo "Setting new IP address: $new_ip"
+    sudo ip addr flush dev "$interface" 2>/dev/null || true
+    sudo ip addr add "$new_ip"/24 dev "$interface" 2>/dev/null || true
+    
+    echo "Bringing interface up..."
+    sudo ip link set "$interface" up 2>/dev/null || true
+    
+    # Restart
+    sudo systemctl start NetworkManager 2>/dev/null || true
+    
+    # Force refresh with dhclient
+    sudo dhclient -r "$interface" 2>/dev/null || true
+    sudo dhclient "$interface" 2>/dev/null || true
     
     echo "Spoofing applied successfully!"
     echo "Interface: $interface"
     echo "New IP: $new_ip"
     echo "New MAC: $new_mac"
+    
+    # Verify
+    echo ""
+    echo "Current network configuration:"
+    echo "IP Address: $(ip addr show "$interface" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)"
+    echo "MAC Address: $(cat /sys/class/net/"$interface"/address 2>/dev/null || echo 'Not found')"
     
     if [[ "$is_persistent" == "true" ]]; then
         echo "Configuration will persist until manually changed."
@@ -223,23 +250,23 @@ main() {
     
     while [[ $# -gt 0 ]]; do
         case $1 in
-            -cp)
+            -c)
                 create_profile=true
                 shift
                 ;;
-            -lp)
+            -l)
                 list_profiles=true
                 shift
                 ;;
-            -up)
+            -u)
                 use_profile="$2"
                 shift 2
                 ;;
-            -gn)
+            -g)
                 generate_new=true
                 shift
                 ;;
-            -so)
+            -s)
                 session_only=true
                 persistent=false
                 shift
@@ -297,7 +324,7 @@ main() {
         exit 0
     fi
     
-    # Apply spoof
+    # Apply
     if [[ "$use_profile" != "" || "$generate_new" == "true" ]]; then
         apply_spoofing "$use_profile" "$persistent"
     else
