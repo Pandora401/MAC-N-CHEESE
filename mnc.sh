@@ -223,37 +223,37 @@ main() {
     
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --create-profile)
+            -cp)
                 create_profile=true
                 shift
                 ;;
-            --list-profiles)
+            -lp)
                 list_profiles=true
                 shift
                 ;;
-            --use-profile)
+            -up)
                 use_profile="$2"
                 shift 2
                 ;;
-            --generate-new)
+            -gn)
                 generate_new=true
                 shift
                 ;;
-            --session-only)
+            -so)
                 session_only=true
                 persistent=false
                 shift
                 ;;
-            --persistent)
+            -p)
                 persistent=true
                 session_only=false
                 shift
                 ;;
-            --reset)
+            -r)
                 reset=true
                 shift
                 ;;
-            --help)
+            -h)
                 usage
                 exit 0
                 ;;
